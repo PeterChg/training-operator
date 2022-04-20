@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/kubeflow/tf-operator/pkg/apis/pytorch/validation"
 
@@ -57,7 +58,8 @@ import (
 )
 
 const (
-	controllerName = "pytorchjob-controller"
+	controllerName        = "pytorchjob-controller"
+	partialSuccessTimeOut = "30m"
 )
 
 var (
@@ -160,6 +162,15 @@ func (r *PyTorchJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		logrus.Warnf("Reconcile PyTorch Job error %v", err)
 		return ctrl.Result{}, err
+	}
+
+	if commonutil.IsPartialSucceeded(pytorchjob.Status) && !commonutil.IsSucceeded(pytorchjob.Status) &&
+		!commonutil.IsFailed(pytorchjob.Status) && !commonutil.IsSuspended(pytorchjob.Status) {
+		if t, err := getPartialSucceededJobRequeueTime(&pytorchjob.Status); nil == err {
+			return ctrl.Result{
+				RequeueAfter: t,
+			}, nil
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -327,6 +338,63 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{}, replicas map[com
 		logrus.Infof("PyTorchJob=%s, ReplicaType=%s expected=%d, running=%d, succeeded=%d , failed=%d",
 			pytorchjob.Name, rtype, expected, running, succeeded, failed)
 
+		if common.JobSuspended(&pytorchjob.Spec.RunPolicy) {
+			msg := fmt.Sprintf("PyTorchJob %s is set suspended and %d %s replica(s) exit.", pytorchjob.Name, running, rtype)
+			r.Recorder.Event(pytorchjob, corev1.EventTypeNormal, commonutil.JobSuspendedReason, msg)
+			err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobSuspended, commonutil.JobSuspendedReason, msg)
+			if err != nil {
+				commonutil.LoggerForJob(pytorchjob).Infof("Append job condition error: %v", err)
+				return err
+			}
+			return nil
+		}
+
+		if commonutil.IsSuspended(*jobStatus) {
+			//allow suspend status change to resumed when all pods are deleted
+			if allJobReplicaDeleted(replicas, jobStatus) {
+				msg := fmt.Sprintf("PyTorchJob %s is Resumed.", pytorchjob.Name)
+				r.Recorder.Event(pytorchjob, corev1.EventTypeNormal, commonutil.JobResumedReason, msg)
+				err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobResumed, commonutil.JobResumedReason, msg)
+				if err != nil {
+					commonutil.LoggerForJob(pytorchjob).Infof("Append job condition error: %v", err)
+					return err
+				}
+			} else {
+				logrus.Infof("PyTorchJob=%s hold suspended, ReplicaType=%s expected=%d, running=%d, succeeded=%d , failed=%d",
+					pytorchjob.Name, rtype, expected, running, succeeded, failed)
+				return nil
+			}
+		}
+
+		if commonutil.IsPartialSucceeded(*jobStatus) {
+			// if The job status continues as PartialSucceeded for 30m.
+			// changed job status to successed
+			currentTime := metav1.Now()
+			gracefultime, _ := time.ParseDuration(partialSuccessTimeOut)
+
+			lt, err := getConditionLastTransitionTime(jobStatus, commonv1.JobPartialSucceeded)
+			if err != nil {
+				logrus.Errorf(err.Error())
+				return err
+			}
+
+			if currentTime.After(lt.Time.Add(gracefultime)) {
+				msg := fmt.Sprintf("PyTorchJob %s is completed when partial succeed timeout.", pytorchjob.Name)
+				logrus.Info(msg)
+				r.Recorder.Event(pytorchjob, corev1.EventTypeNormal, commonutil.JobSucceededReason, msg)
+				if jobStatus.CompletionTime == nil {
+					now := metav1.Now()
+					jobStatus.CompletionTime = &now
+				}
+				err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobSucceeded, commonutil.JobSucceededReason, msg)
+				if err != nil {
+					commonutil.LoggerForJob(pytorchjob).Infof("Append job condition error: %v", err)
+					return err
+				}
+				return nil
+			}
+		}
+
 		if rtype == commonv1.ReplicaType(pytorchv1.PyTorchReplicaTypeMaster) {
 			if running > 0 {
 				msg := fmt.Sprintf("PyTorchJob %s is running.", pytorchjob.Name)
@@ -353,8 +421,21 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{}, replicas map[com
 				trainingoperatorcommon.SuccessfulJobsCounterInc(pytorchjob.Namespace, pytorchv1.FrameworkName)
 				return nil
 			}
+		} else {
+			if jobStatus.ReplicaStatuses[rtype].Succeeded > 0 && 0 == failed {
+				msg := fmt.Sprintf("PyTorchJob %s is partial successed.", pytorchjob.Name)
+				logrus.Info(msg)
+				r.Recorder.Event(pytorchjob, corev1.EventTypeNormal, commonutil.JobPartialSucceededReason, msg)
+				err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobPartialSucceeded, commonutil.JobPartialSucceededReason, msg)
+				if err != nil {
+					commonutil.LoggerForJob(pytorchjob).Infof("Append job condition error: %v", err)
+					return err
+				}
+			}
 		}
+
 		if failed > 0 {
+			//todo need to update kubeflow/common
 			if spec.RestartPolicy == commonv1.RestartPolicyExitCode {
 				msg := fmt.Sprintf("PyTorchJob %s is restarting because %d %s replica(s) failed.", pytorchjob.Name, failed, rtype)
 				r.Recorder.Event(pytorchjob, corev1.EventTypeWarning, commonutil.JobRestartingReason, msg)

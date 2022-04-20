@@ -18,10 +18,12 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	commonv1 "github.com/kubeflow/common/pkg/apis/common/v1"
 	pytorchv1 "github.com/kubeflow/tf-operator/pkg/apis/pytorch/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func SetPodEnv(obj interface{}, podTemplateSpec *corev1.PodTemplateSpec, rtype, index string) error {
@@ -107,4 +109,45 @@ func getPortFromPyTorchJob(job *pytorchv1.PyTorchJob, rtype commonv1.ReplicaType
 		}
 	}
 	return -1, fmt.Errorf("port not found")
+}
+
+func getConditionLastTransitionTime(status *commonv1.JobStatus, condType commonv1.JobConditionType) (metav1.Time, error) {
+	for _, condition := range status.Conditions {
+		if condition.Type == condType {
+			return condition.LastTransitionTime, nil
+		}
+	}
+	return metav1.Time{}, fmt.Errorf("not found assigned condType: %s", condType)
+}
+
+func getPartialSucceededJobRequeueTime(status *commonv1.JobStatus) (time.Duration, error) {
+	currentTime := metav1.Now()
+	gracefultime, _ := time.ParseDuration(partialSuccessTimeOut)
+
+	lt, err := getConditionLastTransitionTime(status, commonv1.JobPartialSucceeded)
+	if err != nil {
+		return time.Duration(0), err
+	}
+
+	if lt.Time.Add(gracefultime).Sub(currentTime.Time) > 0 {
+		return lt.Time.Add(gracefultime).Sub(currentTime.Time), nil
+	}
+	return time.Duration(10 * time.Second), nil
+}
+
+func allJobReplicaDeleted(
+	replicas map[commonv1.ReplicaType]*commonv1.ReplicaSpec,
+	jobStatus *commonv1.JobStatus) bool {
+
+	var succeeded int32 = 0
+	var running int32 = 0
+	var failed int32 = 0
+
+	for rtype, _ := range replicas {
+		status := jobStatus.ReplicaStatuses[rtype]
+		succeeded += status.Succeeded
+		running += status.Active
+		failed += status.Failed
+	}
+	return 0 == succeeded && 0 == running && 0 == failed
 }

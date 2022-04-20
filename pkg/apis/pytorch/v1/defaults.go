@@ -88,7 +88,7 @@ func setTypeNameToCamelCase(job *PyTorchJob, typ common.ReplicaType) {
 func SetDefaults_PyTorchJob(job *PyTorchJob) {
 	// Set default cleanpod policy to None.
 	if job.Spec.RunPolicy.CleanPodPolicy == nil {
-		policy := common.CleanPodPolicyNone
+		policy := common.CleanPodPolicyRunning
 		job.Spec.RunPolicy.CleanPodPolicy = &policy
 	}
 
