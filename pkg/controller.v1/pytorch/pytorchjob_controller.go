@@ -17,6 +17,7 @@ package pytorch
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	commonv1 "github.com/kubeflow/common/pkg/apis/common/v1"
@@ -55,7 +56,8 @@ import (
 )
 
 const (
-	controllerName = "pytorchjob-controller"
+	controllerName        = "pytorchjob-controller"
+	partialSuccessTimeOut = "30m"
 )
 
 // NewReconciler creates a PyTorchJob Reconciler
@@ -160,6 +162,14 @@ func (r *PyTorchJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	if commonutil.IsPartialSucceeded(pytorchjob.Status) && !commonutil.IsSucceeded(pytorchjob.Status) &&
+		!commonutil.IsFailed(pytorchjob.Status) && !commonutil.IsSuspended(pytorchjob.Status) {
+		if t, err := getPartialSucceededJobRequeueTime(&pytorchjob.Status); nil == err {
+			return ctrl.Result{
+				RequeueAfter: t,
+			}, nil
+		}
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -341,6 +351,68 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 		logrus.Infof("PyTorchJob=%s, ReplicaType=%s expected=%d, running=%d, succeeded=%d , failed=%d",
 			pytorchjob.Name, rtype, expected, running, succeeded, failed)
 
+		if commonutil.IsSucceeded(*jobStatus) {
+			logrus.Infof("PyTorchJob %s is succeed.", pytorchjob.Name)
+			return nil
+		}
+
+		if common.JobSuspended(&pytorchjob.Spec.RunPolicy) {
+			msg := fmt.Sprintf("PyTorchJob %s is set suspended and %d %s replica(s) exit.", pytorchjob.Name, running, rtype)
+			r.Recorder.Event(pytorchjob, corev1.EventTypeNormal, commonutil.JobSuspendedReason, msg)
+			err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobSuspended, commonutil.JobSuspendedReason, msg)
+			if err != nil {
+				commonutil.LoggerForJob(pytorchjob).Infof("Append job condition error: %v", err)
+				return err
+			}
+			return nil
+		}
+
+		if commonutil.IsSuspended(*jobStatus) {
+			//allow suspend status change to resumed when all pods are deleted
+			if allJobReplicaDeleted(replicas, jobStatus) {
+				msg := fmt.Sprintf("PyTorchJob %s is Resumed.", pytorchjob.Name)
+				r.Recorder.Event(pytorchjob, corev1.EventTypeNormal, commonutil.JobResumedReason, msg)
+				err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobResumed, commonutil.JobResumedReason, msg)
+				if err != nil {
+					commonutil.LoggerForJob(pytorchjob).Infof("Append job condition error: %v", err)
+					return err
+				}
+			} else {
+				logrus.Infof("PyTorchJob=%s hold suspended, ReplicaType=%s expected=%d, running=%d, succeeded=%d , failed=%d",
+					pytorchjob.Name, rtype, expected, running, succeeded, failed)
+				return nil
+			}
+		}
+
+		if commonutil.IsPartialSucceeded(*jobStatus) {
+			// if The job status continues as PartialSucceeded for 30m.
+			// changed job status to successed
+			currentTime := metav1.Now()
+			gracefultime, _ := time.ParseDuration(partialSuccessTimeOut)
+
+			lt, err := getConditionLastTransitionTime(jobStatus, commonv1.JobPartialSucceeded)
+			if err != nil {
+				logrus.Errorf(err.Error())
+				return err
+			}
+
+			if currentTime.After(lt.Time.Add(gracefultime)) {
+				msg := fmt.Sprintf("PyTorchJob %s is completed when partial succeed timeout.", pytorchjob.Name)
+				logrus.Info(msg)
+				r.Recorder.Event(pytorchjob, corev1.EventTypeNormal, commonutil.JobSucceededReason, msg)
+				if jobStatus.CompletionTime == nil {
+					now := metav1.Now()
+					jobStatus.CompletionTime = &now
+				}
+				err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobSucceeded, commonutil.JobSucceededReason, msg)
+				if err != nil {
+					commonutil.LoggerForJob(pytorchjob).Infof("Append job condition error: %v", err)
+					return err
+				}
+				return nil
+			}
+		}
+
 		if ContainsMasterSpec(replicas) {
 			if rtype == commonv1.ReplicaType(pytorchv1.PyTorchReplicaTypeMaster) {
 				if running > 0 {
@@ -366,7 +438,18 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 						return err
 					}
 					trainingoperatorcommon.SuccessfulJobsCounterInc(pytorchjob.Namespace, pytorchv1.FrameworkName)
-					return nil
+					continue
+				}
+			} else {
+				if jobStatus.ReplicaStatuses[rtype].Succeeded > 0 && 0 == failed {
+					msg := fmt.Sprintf("PyTorchJob %s is partial successed.", pytorchjob.Name)
+					logrus.Info(msg)
+					r.Recorder.Event(pytorchjob, corev1.EventTypeNormal, commonutil.JobPartialSucceededReason, msg)
+					err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobPartialSucceeded, commonutil.JobPartialSucceededReason, msg)
+					if err != nil {
+						commonutil.LoggerForJob(pytorchjob).Infof("Append job condition error: %v", err)
+						return err
+					}
 				}
 			}
 		} else {
@@ -388,6 +471,17 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 					}
 					trainingoperatorcommon.SuccessfulJobsCounterInc(pytorchjob.Namespace, pytorchv1.FrameworkName)
 				} else if running > 0 {
+					if jobStatus.ReplicaStatuses[rtype].Succeeded > 0 && 0 == failed {
+						msg := fmt.Sprintf("PyTorchJob %s is partial successed.", pytorchjob.Name)
+						logrus.Info(msg)
+						r.Recorder.Event(pytorchjob, corev1.EventTypeNormal, commonutil.JobPartialSucceededReason, msg)
+						err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobPartialSucceeded, commonutil.JobPartialSucceededReason, msg)
+						if err != nil {
+							commonutil.LoggerForJob(pytorchjob).Infof("Append job condition error: %v", err)
+							return err
+						}
+					}
+
 					// Some workers are still running, leave a running condition.
 					msg := fmt.Sprintf("TFJob %s/%s is running.",
 						pytorchjob.Namespace, pytorchjob.Name)
@@ -506,4 +600,45 @@ func (r *PyTorchJobReconciler) onOwnerCreateFunc() func(event.CreateEvent) bool 
 		}
 		return true
 	}
+}
+
+func getConditionLastTransitionTime(status *commonv1.JobStatus, condType commonv1.JobConditionType) (metav1.Time, error) {
+	for _, condition := range status.Conditions {
+		if condition.Type == condType {
+			return condition.LastTransitionTime, nil
+		}
+	}
+	return metav1.Time{}, fmt.Errorf("not found assigned condType: %s", condType)
+}
+
+func getPartialSucceededJobRequeueTime(status *commonv1.JobStatus) (time.Duration, error) {
+	currentTime := metav1.Now()
+	gracefultime, _ := time.ParseDuration(partialSuccessTimeOut)
+
+	lt, err := getConditionLastTransitionTime(status, commonv1.JobPartialSucceeded)
+	if err != nil {
+		return time.Duration(0), err
+	}
+
+	if lt.Time.Add(gracefultime).Sub(currentTime.Time) > 0 {
+		return lt.Time.Add(gracefultime).Sub(currentTime.Time), nil
+	}
+	return time.Duration(10 * time.Second), nil
+}
+
+func allJobReplicaDeleted(
+	replicas map[commonv1.ReplicaType]*commonv1.ReplicaSpec,
+	jobStatus *commonv1.JobStatus) bool {
+
+	var succeeded int32 = 0
+	var running int32 = 0
+	var failed int32 = 0
+
+	for rtype, _ := range replicas {
+		status := jobStatus.ReplicaStatuses[rtype]
+		succeeded += status.Succeeded
+		running += status.Active
+		failed += status.Failed
+	}
+	return 0 == succeeded && 0 == running && 0 == failed
 }

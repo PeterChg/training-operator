@@ -24,7 +24,7 @@ var Config struct {
 const (
 	// PyTorchInitContainerImageDefault is the default image for the pytorch
 	// init container.
-	PyTorchInitContainerImageDefault = "alpine:3.10"
+	PyTorchInitContainerImageDefault = "cr.d.xiaomi.net/cloud-ml/alpine:3.10"
 	// PyTorchInitContainerTemplateFileDefault is the default template file for
 	// the pytorch init container.
 	PyTorchInitContainerTemplateFileDefault = "/etc/config/initContainer.yaml"
