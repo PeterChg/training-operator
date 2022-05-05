@@ -89,3 +89,5 @@ require (
 	k8s.io/utils v0.0.0-20200912215256-4140de9c8800 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
 )
+
+replace github.com/kubeflow/common => github.com/woainizhongguo/common v0.4.1-rc.1

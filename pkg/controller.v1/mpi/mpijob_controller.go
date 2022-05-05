@@ -338,6 +338,7 @@ func (jc *MPIJobReconciler) ReconcilePods(
 	rtype commonv1.ReplicaType,
 	spec *commonv1.ReplicaSpec,
 	replicas map[commonv1.ReplicaType]*commonv1.ReplicaSpec,
+	runPolicy *commonv1.RunPolicy,
 ) error {
 
 	mpiJob, ok := job.(*mpiv1.MPIJob)
