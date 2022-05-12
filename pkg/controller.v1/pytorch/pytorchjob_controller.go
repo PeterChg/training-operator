@@ -17,6 +17,7 @@ package pytorch
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kubelabel "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -320,8 +322,9 @@ func (r *PyTorchJobReconciler) DeleteJob(job interface{}) error {
 func (jc *PyTorchJobReconciler) GenLabelSelector(jobName string,
 	rtype commonv1.ReplicaType) *metav1.LabelSelector {
 	labels := jc.GenLabels(jobName)
-	labels[commonv1.ReplicaTypeLabel] = string(rtype)
+	labels[commonv1.ReplicaTypeLabel] = strings.ToLower(string(rtype))
 
+	labels["labelSelectorString"] = kubelabel.SelectorFromSet(labels).String()
 	return &metav1.LabelSelector{
 		MatchLabels: labels,
 	}
@@ -347,9 +350,10 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 		expected := *(spec.Replicas) - succeeded
 		running := status.Active
 		failed := status.Failed
+		specReplicas := *spec.Replicas
 
-		logrus.Infof("PyTorchJob=%s, ReplicaType=%s expected=%d, running=%d, succeeded=%d , failed=%d",
-			pytorchjob.Name, rtype, expected, running, succeeded, failed)
+		logrus.Infof("PyTorchJob=%s, ReplicaType=%s expected=%d, running=%d, succeeded=%d, failed=%d, Replicas=%d",
+			pytorchjob.Name, rtype, expected, running, succeeded, failed, specReplicas)
 
 		if commonutil.IsSucceeded(*jobStatus) {
 			logrus.Infof("PyTorchJob %s is succeed.", pytorchjob.Name)
@@ -494,7 +498,7 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 			}
 		}
 
-		if failed > 0 {
+		if failed > 0 && (specReplicas > succeeded+running) {
 			if spec.RestartPolicy == commonv1.RestartPolicyExitCode {
 				msg := fmt.Sprintf("PyTorchJob %s is restarting because %d %s replica(s) failed.", pytorchjob.Name, failed, rtype)
 				r.Recorder.Event(pytorchjob, corev1.EventTypeWarning, commonutil.JobRestartingReason, msg)

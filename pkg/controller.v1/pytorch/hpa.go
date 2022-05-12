@@ -82,8 +82,9 @@ func desiredHPA(pytorchjob *pytorchv1.PyTorchJob, scheme *runtime.Scheme) (
 		},
 		Spec: autoscalingv2beta2.HorizontalPodAutoscalerSpec{
 			ScaleTargetRef: autoscalingv2beta2.CrossVersionObjectReference{
-				Kind: pytorchjob.Kind,
-				Name: pytorchjob.Name,
+				Kind:       pytorchjob.Kind,
+				Name:       pytorchjob.Name,
+				APIVersion: pytorchjob.APIVersion,
 			},
 			MinReplicas: pytorchjob.Spec.ElasticPolicy.MinReplicas,
 			MaxReplicas: *pytorchjob.Spec.ElasticPolicy.MaxReplicas,
