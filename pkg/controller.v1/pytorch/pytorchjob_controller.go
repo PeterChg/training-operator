@@ -356,6 +356,23 @@ func (r *PyTorchJobReconciler) UpdateJobStatus(job interface{},
 		return fmt.Errorf("%+v is not a type of PyTorchJob", job)
 	}
 
+	// Set StartTime.
+	if jobStatus.StartTime == nil {
+		now := metav1.Now()
+		jobStatus.StartTime = &now
+		// enqueue a sync to check if job past ActiveDeadlineSeconds
+		if pytorchjob.Spec.RunPolicy.ActiveDeadlineSeconds != nil {
+			pytorchjobKey, err := common.KeyFunc(pytorchjob)
+			if err != nil {
+				utilruntime.HandleError(fmt.Errorf("couldn't get key for pytorchjob object %#v: %v", pytorchjob, err))
+				return err
+			}
+
+			logrus.Infof("Job with ActiveDeadlineSeconds will sync after %d seconds", *pytorchjob.Spec.RunPolicy.ActiveDeadlineSeconds)
+			r.WorkQueue.AddAfter(pytorchjobKey, time.Duration(*pytorchjob.Spec.RunPolicy.ActiveDeadlineSeconds)*time.Second)
+		}
+	}
+
 	for rtype, spec := range replicas {
 		status := jobStatus.ReplicaStatuses[rtype]
 		if status.LabelSelector == nil {
