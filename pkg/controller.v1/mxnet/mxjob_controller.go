@@ -165,6 +165,15 @@ func (r *MXJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
+	t, err := util.DurationUntilExpireTime(&mxjob.Spec.RunPolicy, mxjob.Status)
+	if err != nil {
+		logrus.Warnf("Reconcile MX Job error %v", err)
+		return ctrl.Result{}, err
+	}
+	if t >= 0 {
+		return ctrl.Result{Requeue: true, RequeueAfter: t}, nil
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -306,7 +315,7 @@ func (r *MXJobReconciler) DeleteJob(job interface{}) error {
 		return err
 	}
 	r.Recorder.Eventf(mxjob, corev1.EventTypeNormal, control.SuccessfulDeletePodReason, "Deleted job: %v", mxjob.Name)
-	logrus.Info("job deleted", "namespace", mxjob.Namespace, "name", mxjob.Name)
+	logrus.Info("job deleted ", "namespace ", mxjob.Namespace, "name", mxjob.Name)
 	trainingoperatorcommon.DeletedJobsCounterInc(mxjob.Namespace, mxjobv1.FrameworkName)
 	return nil
 }
@@ -323,6 +332,19 @@ func (r *MXJobReconciler) UpdateJobStatus(job interface{}, replicas map[commonv1
 		return err
 	}
 
+	if jobStatus.StartTime == nil {
+		now := metav1.Now()
+		jobStatus.StartTime = &now
+		// enqueue a sync to check if job past ActiveDeadlineSeconds
+		if mxjob.Spec.RunPolicy.ActiveDeadlineSeconds != nil {
+			logrus.Infof("Job with ActiveDeadlineSeconds will sync after %d seconds", *mxjob.Spec.RunPolicy.ActiveDeadlineSeconds)
+			r.WorkQueue.AddAfter(mxjobKey, time.Duration(*mxjob.Spec.RunPolicy.ActiveDeadlineSeconds)*time.Second)
+		}
+	}
+
+	//check whether mxnet Single training
+	singleWorker := r.onlyHasReplicaTypeWorker(replicas)
+
 	for rtype, spec := range replicas {
 		status := jobStatus.ReplicaStatuses[rtype]
 
@@ -332,40 +354,34 @@ func (r *MXJobReconciler) UpdateJobStatus(job interface{}, replicas map[commonv1
 		running := status.Active
 		failed := status.Failed
 
-		r.Log.Info(fmt.Sprintf("MXJob=%s, ReplicaType=%s expected=%d, running=%d, succeeded=%d , failed=%d",
-			mxjob.Name, rtype, expected, running, succeeded, failed))
+		r.Log.Info(fmt.Sprintf("MXJob=%s, ReplicaType=%s expected=%d, running=%d, succeeded=%d , failed=%d, singleWorker=%t",
+			mxjob.Name, rtype, expected, running, succeeded, failed, singleWorker))
 
-		if mxjob.Status.StartTime == nil {
-			now := metav1.Now()
-			mxjob.Status.StartTime = &now
-			// enqueue a sync to check if job past ActiveDeadlineSeconds
-			if mxjob.Spec.RunPolicy.ActiveDeadlineSeconds != nil {
-				logrus.Infof("Job with ActiveDeadlineSeconds will sync after %d seconds", *mxjob.Spec.RunPolicy.ActiveDeadlineSeconds)
-				r.WorkQueue.AddAfter(mxjobKey, time.Duration(*mxjob.Spec.RunPolicy.ActiveDeadlineSeconds)*time.Second)
+		if rtype == commonv1.ReplicaType(mxjobv1.MXReplicaTypeScheduler) || singleWorker {
+			if running > 0 {
+				msg := fmt.Sprintf("MXJob %s is running.", mxjob.Name)
+				err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobRunning, mxJobRunningReason, msg)
+				if err != nil {
+					logrus.Infof("Append mxjob condition error: %v", err)
+					return err
+				}
 			}
-		}
-
-		if running > 0 {
-			msg := fmt.Sprintf("MXJob %s is running.", mxjob.Name)
-			err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobRunning, mxJobRunningReason, msg)
-			if err != nil {
-				logrus.Infof("Append mxjob condition error: %v", err)
-				return err
+			// when scheduler is succeeded, the job is finished.
+			if expected == 0 {
+				msg := fmt.Sprintf("MXJob %s is successfully completed.", mxjob.Name)
+				r.Recorder.Event(mxjob, corev1.EventTypeNormal, mxJobSucceededReason, msg)
+				if jobStatus.CompletionTime == nil {
+					now := metav1.Now()
+					jobStatus.CompletionTime = &now
+				}
+				err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobSucceeded, mxJobSucceededReason, msg)
+				if err != nil {
+					logrus.Infof("Append mxjob condition error: %v", err)
+					return err
+				}
+				trainingoperatorcommon.SuccessfulJobsCounterInc(mxjob.Namespace, mxjobv1.FrameworkName)
+				return nil
 			}
-		}
-		if expected == 0 {
-			msg := fmt.Sprintf("MXJob %s is successfully completed.", mxjob.Name)
-			r.Recorder.Event(mxjob, corev1.EventTypeNormal, mxJobSucceededReason, msg)
-			if mxjob.Status.CompletionTime == nil {
-				now := metav1.Now()
-				mxjob.Status.CompletionTime = &now
-			}
-			err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobSucceeded, mxJobSucceededReason, msg)
-			if err != nil {
-				logrus.Infof("Append mxjob condition error: %v", err)
-				return err
-			}
-			trainingoperatorcommon.SuccessfulJobsCounterInc(mxjob.Namespace, mxjobv1.FrameworkName)
 		}
 
 		if failed > 0 {
@@ -381,9 +397,9 @@ func (r *MXJobReconciler) UpdateJobStatus(job interface{}, replicas map[commonv1
 			} else {
 				msg := fmt.Sprintf("mxjob %s is failed because %d %s replica(s) failed.", mxjob.Name, failed, rtype)
 				r.Recorder.Event(mxjob, corev1.EventTypeNormal, mxJobFailedReason, msg)
-				if mxjob.Status.CompletionTime == nil {
+				if jobStatus.CompletionTime == nil {
 					now := metav1.Now()
-					mxjob.Status.CompletionTime = &now
+					jobStatus.CompletionTime = &now
 				}
 				err := commonutil.UpdateJobConditions(jobStatus, commonv1.JobFailed, mxJobFailedReason, msg)
 				if err != nil {
@@ -400,6 +416,10 @@ func (r *MXJobReconciler) UpdateJobStatus(job interface{}, replicas map[commonv1
 
 // UpdateJobStatusInApiServer updates the status of the given MXJob.
 func (r *MXJobReconciler) UpdateJobStatusInApiServer(job interface{}, jobStatus *commonv1.JobStatus) error {
+	if jobStatus.ReplicaStatuses == nil {
+		jobStatus.ReplicaStatuses = map[commonv1.ReplicaType]*commonv1.ReplicaStatus{}
+	}
+
 	mxJob, ok := job.(*mxjobv1.MXJob)
 	if !ok {
 		return fmt.Errorf("%v is not a type of MXJob", mxJob)
@@ -454,4 +474,19 @@ func (r *MXJobReconciler) onOwnerCreateFunc() func(event.CreateEvent) bool {
 		}
 		return true
 	}
+}
+
+func (r *MXJobReconciler) onlyHasReplicaTypeWorker(replicas map[commonv1.ReplicaType]*commonv1.ReplicaSpec) bool {
+	var workerNum, scheNum, srvNum int32 = 0, 0, 0
+
+	for rtype, spec := range replicas {
+		if rtype == commonv1.ReplicaType(mxjobv1.MXReplicaTypeScheduler) {
+			scheNum += *spec.Replicas
+		} else if rtype == commonv1.ReplicaType(mxjobv1.MXReplicaTypeServer) {
+			srvNum += *spec.Replicas
+		} else if rtype == commonv1.ReplicaType(mxjobv1.MXReplicaTypeWorker) {
+			workerNum += *spec.Replicas
+		}
+	}
+	return workerNum == 1 && scheNum == 0 && srvNum == 0
 }
