@@ -67,26 +67,26 @@ type ElasticPolicy struct {
 	// minReplicas is the lower limit for the number of replicas to which the training job
 	// can scale down.  It defaults to null.
 	// +optional
-	MinReplicas *int32 `json:"minReplicas,omitempty"`
+	MinReplicas *int32 `json:"minReplicas,omitempty" protobuf:"bytes,1,opt,name=minReplicas"`
 	// upper limit for the number of pods that can be set by the autoscaler; cannot be smaller than MinReplicas, defaults to null.
 	// +optional
-	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
+	MaxReplicas *int32 `json:"maxReplicas,omitempty" protobuf:"bytes,2,opt,name=maxReplicas"`
 
-	RDZVBackend *RDZVBackend `json:"rdzvBackend,omitempty"`
-	RDZVPort    *int32       `json:"rdzvPort,omitempty"`
-	RDZVHost    *string      `json:"rdzvHost,omitempty"`
-	RDZVID      *string      `json:"rdzvId,omitempty"`
+	RDZVBackend *RDZVBackend `json:"rdzvBackend,omitempty" protobuf:"bytes,3,opt,name=rdzvBackend"`
+	RDZVPort    *int32       `json:"rdzvPort,omitempty" protobuf:"bytes,4,opt,name=rdzvPort"`
+	RDZVHost    *string      `json:"rdzvHost,omitempty" protobuf:"bytes,5,opt,name=rdzvHost"`
+	RDZVID      *string      `json:"rdzvId,omitempty" protobuf:"bytes,6,opt,name=rdzvId"`
 	// RDZVConf contains additional rendezvous configuration (<key1>=<value1>,<key2>=<value2>,...).
-	RDZVConf []RDZVConf `json:"rdzvConf,omitempty"`
+	RDZVConf []RDZVConf `json:"rdzvConf,omitempty" protobuf:"bytes,7,rep,name=rdzvConf"`
 	// Start a local standalone rendezvous backend that is represented by a C10d TCP store
 	// on port 29400. Useful when launching single-node, multi-worker job. If specified
 	// --rdzv_backend, --rdzv_endpoint, --rdzv_id are auto-assigned; any explicitly set values
 	// are ignored.
-	Standalone *bool `json:"standalone,omitempty"`
+	Standalone *bool `json:"standalone,omitempty" protobuf:"bytes,8,opt,name=standalone"`
 	// Number of workers per node; supported values: [auto, cpu, gpu, int].
-	NProcPerNode *int32 `json:"nProcPerNode,omitempty"`
+	NProcPerNode *int32 `json:"nProcPerNode,omitempty" protobuf:"bytes,9,opt,name=nProcPerNode"`
 
-	MaxRestarts *int32 `json:"maxRestarts,omitempty"`
+	MaxRestarts *int32 `json:"maxRestarts,omitempty" protobuf:"bytes,10,opt,name=maxRestarts"`
 
 	// Metrics contains the specifications which are used to calculate the
 	// desired replica count (the maximum replica count across all metrics will
@@ -97,12 +97,12 @@ type ElasticPolicy struct {
 	// more information about how each type of metric must respond.
 	// If not set, the HPA will not be created.
 	// +optional
-	Metrics []autoscalingv2beta2.MetricSpec `json:"metrics,omitempty"`
+	Metrics []autoscalingv2beta2.MetricSpec `json:"metrics,omitempty" protobuf:"bytes,11,rep,name=metrics"`
 }
 
 type RDZVConf struct {
-	Key   string `json:"key,omitempty"`
-	Value string `json:"value,omitempty"`
+	Key   string `json:"key,omitempty" protobuf:"bytes,1,opt,name=key"`
+	Value string `json:"value,omitempty" protobuf:"bytes,2,opt,name=value"`
 }
 
 type RDZVBackend string
