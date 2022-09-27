@@ -90,4 +90,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
 )
 
-replace github.com/kubeflow/common => github.com/woainizhongguo/common v0.4.1-rc.5
+replace github.com/kubeflow/common => github.com/dreaming12580/common v0.4.1-rc9

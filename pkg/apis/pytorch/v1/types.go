@@ -67,7 +67,7 @@ type ElasticPolicy struct {
 	// minReplicas is the lower limit for the number of replicas to which the training job
 	// can scale down.  It defaults to null.
 	// +optional
-	MinReplicas *int32 `json:"minReplicas,omitempty"  protobuf:"bytes,1,name=minReplicas"`
+	MinReplicas *int32 `json:"minReplicas,omitempty" protobuf:"bytes,1,opt,name=minReplicas"`
 	// upper limit for the number of pods that can be set by the autoscaler; cannot be smaller than MinReplicas, defaults to null.
 	// +optional
 	MaxReplicas *int32 `json:"maxReplicas,omitempty" protobuf:"bytes,2,opt,name=maxReplicas"`
@@ -101,7 +101,7 @@ type ElasticPolicy struct {
 }
 
 type RDZVConf struct {
-	Key   string `json:"key,omitempty" protobuf:"bytes,1,name=key"`
+	Key   string `json:"key,omitempty" protobuf:"bytes,1,opt,name=key"`
 	Value string `json:"value,omitempty" protobuf:"bytes,2,opt,name=value"`
 }
 
