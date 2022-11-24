@@ -139,6 +139,12 @@ echo "Generating OpenAPI specification for xgboost/v1"
     --output-package github.com/kubeflow/training-operator/pkg/apis/xgboost/v1 \
     --go-header-file hack/boilerplate/boilerplate.go.txt "$@"
 
+echo "Generating OpenAPI specification for mpi/v1"
+./openapi-gen --input-dirs github.com/kubeflow/training-operator/pkg/apis/mpi/v1,github.com/kubeflow/common/pkg/apis/common/v1 \
+    --report-filename=hack/violation_exception.list \
+    --output-package github.com/kubeflow/training-operator/pkg/apis/mpi/v1 \
+    --go-header-file hack/boilerplate/boilerplate.go.txt "$@"
+
 cd - >/dev/null
 
 # Copy everything back.

@@ -22,8 +22,8 @@
 package v1
 
 import (
-	spec "github.com/go-openapi/spec"
 	common "k8s.io/kube-openapi/pkg/common"
+	spec "k8s.io/kube-openapi/pkg/validation/spec"
 )
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
@@ -51,6 +51,7 @@ func schema_pkg_apis_common_v1_JobCondition(ref common.ReferenceCallback) common
 					"type": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Type of job condition.",
+							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -58,6 +59,7 @@ func schema_pkg_apis_common_v1_JobCondition(ref common.ReferenceCallback) common
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Status of the condition, one of True, False, Unknown.",
+							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -79,12 +81,14 @@ func schema_pkg_apis_common_v1_JobCondition(ref common.ReferenceCallback) common
 					"lastUpdateTime": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The last time this condition was updated.",
+							Default:     map[string]interface{}{},
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
 					"lastTransitionTime": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Last time the condition transitioned from one status to another.",
+							Default:     map[string]interface{}{},
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
@@ -111,7 +115,8 @@ func schema_pkg_apis_common_v1_JobStatus(ref common.ReferenceCallback) common.Op
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Ref: ref("github.com/kubeflow/common/pkg/apis/common/v1.JobCondition"),
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/kubeflow/common/pkg/apis/common/v1.JobCondition"),
 									},
 								},
 							},
@@ -175,6 +180,7 @@ func schema_pkg_apis_common_v1_ReplicaSpec(ref common.ReferenceCallback) common.
 					"template": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Template is the object that describes the pod that will be created for this replica. RestartPolicy in PodTemplateSpec will be overide by RestartPolicy in ReplicaSpec",
+							Default:     map[string]interface{}{},
 							Ref:         ref("k8s.io/api/core/v1.PodTemplateSpec"),
 						},
 					},
@@ -276,6 +282,13 @@ func schema_pkg_apis_common_v1_RunPolicy(ref common.ReferenceCallback) common.Op
 							Ref:         ref("github.com/kubeflow/common/pkg/apis/common/v1.SchedulingPolicy"),
 						},
 					},
+					"suspend": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Suspend specifies whether the Job controller should create Pods or not. If a Job is created with suspend set to true, no Pods are created by the Job controller. If a Job is suspended after creation (i.e. the flag goes from false to true), the Job controller will delete all active Pods associated with this Job. Users must design their workload to gracefully handle this. Suspending a Job will reset the StartTime field of the Job, effectively resetting the ActiveDeadlineSeconds timer too. This is an alpha field and requires the SuspendJob feature gate to be enabled; otherwise this field may not be set to true. Defaults to false.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
@@ -310,7 +323,8 @@ func schema_pkg_apis_common_v1_SchedulingPolicy(ref common.ReferenceCallback) co
 								Allows: true,
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Ref: ref("k8s.io/apimachinery/pkg/api/resource.Quantity"),
+										Default: map[string]interface{}{},
+										Ref:     ref("k8s.io/apimachinery/pkg/api/resource.Quantity"),
 									},
 								},
 							},
@@ -353,17 +367,20 @@ func schema_pkg_apis_mxnet_v1_MXJob(ref common.ReferenceCallback) common.OpenAPI
 					},
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref("github.com/kubeflow/training-operator/pkg/apis/mxnet/v1.MXJobSpec"),
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/kubeflow/training-operator/pkg/apis/mxnet/v1.MXJobSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref("github.com/kubeflow/common/pkg/apis/common/v1.JobStatus"),
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/kubeflow/common/pkg/apis/common/v1.JobStatus"),
 						},
 					},
 				},
@@ -397,7 +414,8 @@ func schema_pkg_apis_mxnet_v1_MXJobList(ref common.ReferenceCallback) common.Ope
 					},
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
 						},
 					},
 					"items": {
@@ -406,7 +424,8 @@ func schema_pkg_apis_mxnet_v1_MXJobList(ref common.ReferenceCallback) common.Ope
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Ref: ref("github.com/kubeflow/training-operator/pkg/apis/mxnet/v1.MXJob"),
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/kubeflow/training-operator/pkg/apis/mxnet/v1.MXJob"),
 									},
 								},
 							},
@@ -431,12 +450,14 @@ func schema_pkg_apis_mxnet_v1_MXJobSpec(ref common.ReferenceCallback) common.Ope
 					"runPolicy": {
 						SchemaProps: spec.SchemaProps{
 							Description: "RunPolicy encapsulates various runtime policies of the distributed training job, for example how to clean up resources and how long the job can stay active.",
+							Default:     map[string]interface{}{},
 							Ref:         ref("github.com/kubeflow/common/pkg/apis/common/v1.RunPolicy"),
 						},
 					},
 					"jobMode": {
 						SchemaProps: spec.SchemaProps{
 							Description: "JobMode specify the kind of MXjob to do. Different mode may have different MXReplicaSpecs request",
+							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
