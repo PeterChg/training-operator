@@ -154,7 +154,7 @@ $(GOPATH)/bin/protoc-gen-grpc-gateway:
 $(GOPATH)/bin/protoc-gen-swagger:
 	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger@v1.16.0
 $(GOPATH)/bin/openapi-gen:
-	go install k8s.io/kube-openapi/cmd/openapi-gen@v0.0.0-20220124234850-424119656bbf
+	go install k8s.io/kube-openapi/cmd/openapi-gen@v0.0.0-20210421082810-95288971da7e
 $(GOPATH)/bin/goimports:
 	go install golang.org/x/tools/cmd/goimports@v0.1.7
 

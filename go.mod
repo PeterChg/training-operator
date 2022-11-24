@@ -17,7 +17,7 @@ require (
 	k8s.io/client-go v0.19.9
 	k8s.io/code-generator v0.19.9
 	k8s.io/klog v1.0.0
-	k8s.io/kube-openapi v0.0.0-20200805222855-6aeccd4b50c6
+	k8s.io/kube-openapi v0.0.0-20210421082810-95288971da7e
 	sigs.k8s.io/controller-runtime v0.7.2
 	sigs.k8s.io/yaml v1.2.0
 	volcano.sh/apis v1.2.0-k8s1.19.6
@@ -87,7 +87,7 @@ require (
 	k8s.io/gengo v0.0.0-20200428234225-8167cfdcfc14 // indirect
 	k8s.io/klog/v2 v2.2.0 // indirect
 	k8s.io/utils v0.0.0-20200912215256-4140de9c8800 // indirect
-	sigs.k8s.io/structured-merge-diff/v4 v4.0.1 // indirect
+	sigs.k8s.io/structured-merge-diff/v4 v4.0.2 // indirect
 )
 
-replace github.com/kubeflow/common => github.com/PeterChg/common v0.4.1-rc.6
+replace github.com/kubeflow/common => github.com/PeterChg/common v0.4.1-rc.7
