@@ -17,6 +17,11 @@ package mpi
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"reflect"
 	"sort"
@@ -32,8 +37,10 @@ import (
 	commonutil "github.com/kubeflow/common/pkg/util"
 	"github.com/kubeflow/training-operator/pkg/common/util"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -67,13 +74,29 @@ const (
 	controllerName            = "mpijob-controller"
 )
 
+var (
+	sshVolumeItems = []corev1.KeyToPath{
+		{
+			Key:  corev1.SSHAuthPrivateKey,
+			Path: sshPrivateKeyFile,
+		},
+		{
+			Key:  sshPublicKey,
+			Path: sshPublicKeyFile,
+		},
+		{
+			Key:  sshPublicKey,
+			Path: sshAuthorizedKeysFile,
+		},
+	}
+)
+
 func NewReconciler(mgr manager.Manager, enableGangScheduling bool) *MPIJobReconciler {
 	r := &MPIJobReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		recorder:  mgr.GetEventRecorderFor(controllerName),
-		apiReader: mgr.GetAPIReader(),
-		Log:       log.Log,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		recorder: mgr.GetEventRecorderFor(controllerName),
+		Log:      log.Log,
 	}
 
 	cfg := mgr.GetConfig()
@@ -102,10 +125,9 @@ func NewReconciler(mgr manager.Manager, enableGangScheduling bool) *MPIJobReconc
 type MPIJobReconciler struct {
 	common.JobController
 	client.Client
-	Scheme    *runtime.Scheme
-	recorder  record.EventRecorder
-	apiReader client.Reader
-	Log       logr.Logger
+	Scheme   *runtime.Scheme
+	recorder record.EventRecorder
+	Log      logr.Logger
 }
 
 //+kubebuilder:rbac:groups=kubeflow.org,resources=mpijobs,verbs=get;list;watch;create;update;patch;delete
@@ -224,6 +246,18 @@ func (jc *MPIJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// inject watching for job related ServiceAccount
 	if err = c.Watch(&source.Kind{Type: &corev1.ServiceAccount{}}, &handler.EnqueueRequestForOwner{
+		IsController: true,
+		OwnerType:    &mpiv1.MPIJob{},
+	}, predicate.Funcs{
+		CreateFunc: util.OnDependentCreateFuncGeneric(jc.Expectations),
+		UpdateFunc: util.OnDependentUpdateFuncGeneric(&jc.JobController),
+		DeleteFunc: util.OnDependentDeleteFuncGeneric(jc.Expectations),
+	}); err != nil {
+		return err
+	}
+
+	// inject watching for job related Secret
+	if err = c.Watch(&source.Kind{Type: &corev1.Secret{}}, &handler.EnqueueRequestForOwner{
 		IsController: true,
 		OwnerType:    &mpiv1.MPIJob{},
 	}, predicate.Funcs{
@@ -394,6 +428,13 @@ func (jc *MPIJobReconciler) ReconcilePods(
 			return err
 		}
 
+		if framework := mpiJob.GetAnnotations()[frameworkKey]; framework == deepspeedFramework {
+			_, err = jc.getOrCreateSSHAuthSecret(mpiJob)
+			if err != nil {
+				return err
+			}
+		}
+
 		worker, err = jc.getOrCreateWorker(mpiJob)
 		if err != nil {
 			return err
@@ -501,7 +542,11 @@ func (jc *MPIJobReconciler) updateMPIJobStatus(mpiJob *mpiv1.MPIJob, launcher *c
 func (jc *MPIJobReconciler) GetJobFromAPIClient(namespace, name string) (metav1.Object, error) {
 	job := &mpiv1.MPIJob{}
 
-	err := jc.apiReader.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: name}, job)
+	clientReader, err := util.GetDelegatingClientFromClient(jc.Client)
+	if err != nil {
+		return nil, err
+	}
+	err = clientReader.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: name}, job)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			logrus.Error(err, "MPIJob not found", "namespace", namespace, "name", name)
@@ -867,6 +912,92 @@ func (jc *MPIJobReconciler) getLauncherRoleBinding(mpiJob *mpiv1.MPIJob) (*rbacv
 	return rb, nil
 }
 
+// getOrCreateSSHAuthSecret gets the Secret holding the SSH auth for this job,
+// or create one if it doesn't exist.
+func (jc *MPIJobReconciler) getOrCreateSSHAuthSecret(mpiJob *mpiv1.MPIJob) (*corev1.Secret, error) {
+	secret := &corev1.Secret{}
+	NamespacedName := types.NamespacedName{Namespace: mpiJob.Namespace, Name: mpiJob.Name + sshAuthSecretSuffix}
+	err := jc.Get(context.TODO(), NamespacedName, secret)
+	if err == nil {
+		jc.Recorder.Eventf(mpiJob, corev1.EventTypeNormal, "ssh auth secret is exist", "SSHAuthSecret: %v", secret.Name)
+	}
+	if errors.IsNotFound(err) {
+		secret, err := newSSHAuthSecret(mpiJob)
+		if err != nil {
+			return nil, err
+		}
+		return jc.KubeClientSet.CoreV1().Secrets(mpiJob.Namespace).Create(context.TODO(), secret, metav1.CreateOptions{})
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !metav1.IsControlledBy(secret, mpiJob) {
+		msg := fmt.Sprintf(MessageResourceExists, secret.Name, secret.Kind)
+		jc.recorder.Event(mpiJob, corev1.EventTypeWarning, ErrResourceExists, msg)
+		return nil, fmt.Errorf(msg)
+	}
+	newSecret, err := newSSHAuthSecret(mpiJob)
+	if err != nil {
+		return nil, fmt.Errorf("generating new secret: %w", err)
+	}
+	hasKeys := keysFromData(secret.Data)
+	wantKeys := keysFromData(newSecret.Data)
+	if !equality.Semantic.DeepEqual(hasKeys, wantKeys) {
+		secret := secret.DeepCopy()
+		secret.Data = newSecret.Data
+		return jc.KubeClientSet.CoreV1().Secrets(secret.Namespace).Update(context.TODO(), secret, metav1.UpdateOptions{})
+	}
+	return secret, nil
+}
+
+func keysFromData(data map[string][]byte) []string {
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// newSSHAuthSecret creates a new Secret that holds SSH auth: a private Key
+// and its public key version.
+func newSSHAuthSecret(mpiJob *mpiv1.MPIJob) (*corev1.Secret, error) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generating private SSH key: %w", err)
+	}
+	privateDER, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("converting private SSH key to DER format: %w", err)
+	}
+	privatePEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "EC PRIVATE KEY",
+		Bytes: privateDER,
+	})
+
+	publicKey, err := ssh.NewPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("generating public SSH key: %w", err)
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      mpiJob.Name + sshAuthSecretSuffix,
+			Namespace: mpiJob.Namespace,
+			Labels: map[string]string{
+				"app": mpiJob.Name,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(mpiJob, mpiv1.SchemeGroupVersionKind),
+			},
+		},
+		Type: corev1.SecretTypeSSHAuth,
+		Data: map[string][]byte{
+			corev1.SSHAuthPrivateKey: privatePEM,
+			sshPublicKey:             ssh.MarshalAuthorizedKey(publicKey),
+		},
+	}, nil
+}
+
 // getOrCreateWorker gets the worker Pod controlled by this
 // MPIJob, or creates one if it doesn't exist.
 func (jc *MPIJobReconciler) getOrCreateWorker(mpiJob *mpiv1.MPIJob) ([]*corev1.Pod, error) {
@@ -883,7 +1014,8 @@ func (jc *MPIJobReconciler) getOrCreateWorker(mpiJob *mpiv1.MPIJob) ([]*corev1.P
 	}
 
 	// Remove Pods when replicas are scaled down
-	selector, err := workerSelector(mpiJob.Name)
+	genericLabels := jc.GenLabels(mpiJob.GetName())
+	selector, err := workerSelector(genericLabels)
 	if err != nil {
 		return nil, err
 	}
@@ -962,7 +1094,8 @@ func (jc *MPIJobReconciler) getOrCreateWorker(mpiJob *mpiv1.MPIJob) ([]*corev1.P
 // sets the appropriate OwnerReferences on the resource so handleObject can
 // discover the MPIJob resource that 'owns' it.
 func (jc *MPIJobReconciler) newWorker(mpiJob *mpiv1.MPIJob, name string) *corev1.Pod {
-	labels := defaultWorkerLabels(mpiJob.Name)
+	genericLabels := jc.GenLabels(mpiJob.GetName())
+	labels := defaultWorkerLabels(genericLabels)
 
 	podSpec := mpiJob.Spec.MPIReplicaSpecs[mpiv1.MPIReplicaTypeWorker].Template.DeepCopy()
 
@@ -1013,6 +1146,10 @@ func (jc *MPIJobReconciler) newWorker(mpiJob *mpiv1.MPIJob, name string) *corev1
 		},
 	})
 
+	if framework := mpiJob.GetAnnotations()[frameworkKey]; framework == deepspeedFramework {
+		jc.setupSSHOnPod(&podSpec.Spec, mpiJob)
+	}
+
 	// if gang-scheduling is enabled:
 	// 1. if user has specified other scheduler, we report a warning without overriding any fields.
 	// 2. if no SchedulerName is set for pods, then we set the SchedulerName to "volcano".
@@ -1051,11 +1188,8 @@ func (jc *MPIJobReconciler) newWorker(mpiJob *mpiv1.MPIJob, name string) *corev1
 // the MPIJob resource that 'owns' it.
 func (jc *MPIJobReconciler) newLauncher(mpiJob *mpiv1.MPIJob, kubectlDeliveryImage string, isGPULauncher bool) *corev1.Pod {
 	launcherName := mpiJob.Name + launcherSuffix
-	labels := map[string]string{
-		labelGroupName:   "kubeflow.org",
-		labelMPIJobName:  mpiJob.Name,
-		labelMPIRoleType: launcher,
-	}
+	genericLabels := jc.GenLabels(mpiJob.GetName())
+	labels := defaultLauncherLabels(genericLabels)
 
 	podSpec := mpiJob.Spec.MPIReplicaSpecs[mpiv1.MPIReplicaTypeLauncher].Template.DeepCopy()
 	// copy the labels and annotations to pod from PodTemplate
@@ -1163,7 +1297,22 @@ func (jc *MPIJobReconciler) newLauncher(mpiJob *mpiv1.MPIJob, kubectlDeliveryIma
 		corev1.VolumeMount{
 			Name:      configVolumeName,
 			MountPath: configMountPath,
-		})
+		},
+	)
+	workerSpec := mpiJob.Spec.MPIReplicaSpecs[mpiv1.MPIReplicaTypeWorker]
+	workerReplicas := int32(0)
+	if workerSpec != nil && workerSpec.Replicas != nil {
+		workerReplicas = *workerSpec.Replicas
+	}
+	if framework := mpiJob.GetAnnotations()[frameworkKey]; framework == deepspeedFramework && workerReplicas > 0 {
+		container.VolumeMounts = append(container.VolumeMounts,
+			corev1.VolumeMount{
+				Name:      configVolumeName,
+				SubPath:   hostfileName,
+				MountPath: deepspeedConfigMountPath,
+			},
+		)
+	}
 	podSpec.Spec.Containers[0] = container
 
 	// Submit a warning event if the user specifies restart policy for
@@ -1211,6 +1360,9 @@ func (jc *MPIJobReconciler) newLauncher(mpiJob *mpiv1.MPIJob, kubectlDeliveryIma
 				},
 			},
 		})
+	if framework := mpiJob.GetAnnotations()[frameworkKey]; framework == deepspeedFramework {
+		jc.setupSSHOnPod(&podSpec.Spec, mpiJob)
+	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        launcherName,
@@ -1225,9 +1377,48 @@ func (jc *MPIJobReconciler) newLauncher(mpiJob *mpiv1.MPIJob, kubectlDeliveryIma
 	}
 }
 
+func (jc *MPIJobReconciler) setupSSHOnPod(podSpec *corev1.PodSpec, mpiJob *mpiv1.MPIJob) {
+	var mode *int32 = newInt32(0600)
+	mainContainer := &podSpec.Containers[0]
+	podSpec.Volumes = append(podSpec.Volumes,
+		corev1.Volume{
+			Name: sshAuthVolume,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					DefaultMode: mode,
+					SecretName:  mpiJob.Name + sshAuthSecretSuffix,
+					Items:       sshVolumeItems,
+				},
+			},
+		})
+
+	mainContainer.VolumeMounts = append(mainContainer.VolumeMounts,
+		corev1.VolumeMount{
+			Name:      sshAuthVolume,
+			SubPath:   sshPrivateKeyFile,
+			MountPath: rootSSHPath + "/" + sshPrivateKeyFile,
+		},
+		corev1.VolumeMount{
+			Name:      sshAuthVolume,
+			SubPath:   sshPublicKeyFile,
+			MountPath: rootSSHPath + "/" + sshPublicKeyFile,
+		},
+		corev1.VolumeMount{
+			Name:      sshAuthVolume,
+			SubPath:   sshAuthorizedKeysFile,
+			MountPath: rootSSHPath + "/" + sshAuthorizedKeysFile,
+		},
+	)
+}
+
+func newInt32(v int32) *int32 {
+	return &v
+}
+
 // getRunningWorkerPods get all worker Pods with Running phase controlled by this MPIJob.
 func (jc *MPIJobReconciler) getRunningWorkerPods(mpiJob *mpiv1.MPIJob) ([]*corev1.Pod, error) {
-	selector, err := workerSelector(mpiJob.Name)
+	genericLabels := jc.GenLabels(mpiJob.GetName())
+	selector, err := workerSelector(genericLabels)
 	if err != nil {
 		return nil, err
 	}
