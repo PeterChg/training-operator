@@ -12,6 +12,7 @@ require (
 	github.com/prometheus/client_golang v1.10.0
 	github.com/sirupsen/logrus v1.6.0
 	go.uber.org/zap v1.15.0
+	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
 	k8s.io/api v0.19.9
 	k8s.io/apimachinery v0.19.9
 	k8s.io/client-go v0.19.9
@@ -66,7 +67,6 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	go.uber.org/atomic v1.6.0 // indirect
 	go.uber.org/multierr v1.5.0 // indirect
-	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9 // indirect
 	golang.org/x/mod v0.3.0 // indirect
 	golang.org/x/net v0.0.0-20210405180319-a5a99cb37ef4 // indirect
 	golang.org/x/oauth2 v0.0.0-20191202225959-858c2ad4c8b6 // indirect
@@ -90,4 +90,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.0.2 // indirect
 )
 
-replace github.com/kubeflow/common => github.com/PeterChg/common v0.4.1-rc.7
+replace github.com/kubeflow/common => github.com/PeterChg/common v0.4.1-rc.8-1
